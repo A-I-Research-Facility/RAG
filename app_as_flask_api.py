@@ -11,11 +11,13 @@ import json
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import threading
+from flask_cors import CORS
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Initialize Flask app
 app = Flask(__name__)
+CORS(app)
 app.config['UPLOAD_FOLDER'] = './docs'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 app.config['ALLOWED_EXTENSIONS'] = {'txt', 'pdf', 'docx'}
