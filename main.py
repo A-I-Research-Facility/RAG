@@ -18,14 +18,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # read text file
 def read_text_file(file_path: str):
-    print("Reading a text file")
+    # print("Reading a text file")
     with open(file_path, 'r', encoding="utf-8") as file:
         return file.read()
 
 
 # read PDF file
 def read_pdf_file(file_path: str):
-    print("Reading a pdf file")
+    # print("Reading a pdf file")
     text = ""
     with open(file_path, 'rb') as file:
         pdf_reader = PyPDF2.PdfReader(file)
@@ -36,7 +36,7 @@ def read_pdf_file(file_path: str):
 
 # read docx file
 def read_docx_file(file_path: str):
-    print("Reading a docx file")
+    # print("Reading a docx file")
     doc = docx.Document(file_path)
     return "\n".join([paragraph.text for paragraph in doc.paragraphs])
 
@@ -218,7 +218,7 @@ def get_context_with_sources(results):
 
 
 # ---------------------------------
-# Add the LLM (OpenAI)
+# Add the LLM (OpenAI - DeepSeek R1)
 # ---------------------------------
 
 load_dotenv()
@@ -228,28 +228,29 @@ ai_client = OpenAI(api_key=openrouterDeepseekKey,
                    base_url="https://openrouter.ai/api/v1")
 
 
-def get_prompt(query: str, context: str):
-    prompt = f"""Based on the following context, please answer the question.
-    If answer cannot be derived from the context, 
-    say 'I cannot answer this question based on the provided documents.'
-        Context: {context}
-        Question: {query}
-        Answer:"""
+def get_prompt(query: str, conversation_history, context: str):
+    prompt = f"""Based on the following context and conversation history,
+    please provide a relevant and contextual response.
+    If answer cannot be derived from the context, only use conversation history or 
+    say 'I cannot answer this question based on the provided information.'
+        Context from documents: {context}
+        
+        Previous conversation: {conversation_history}
+
+        human: {query}
+
+        assistant:"""
 
     return prompt
 
 
-def generate_response(query: str, context: str):
-    prompt = get_prompt(query, context)
+def generate_response(query: str, context: str, conversation_history: str = ""):
+    prompt = get_prompt(query, conversation_history, context)
 
     completion = ai_client.chat.completions.create(
         model="deepseek/deepseek-r1:free",
         messages=[{
-            "role": "system", "content": "You are a helpful assistant that answers questions based on given context"
-        },
-            {
-            "role": "user",
-            "content": prompt
+            "role": "system", "content": prompt
         }],
         temperature=0,
         max_tokens=500
@@ -302,3 +303,91 @@ def add_message(session_id: str, role: str, content: str):
         "content": content,
         "timestamp": datetime.now().isoformat()
     })
+
+
+def get_conversation_history(session_id: str, max_messages: int = None):
+    # if this is first message, no history
+    if session_id not in conversations:
+        return []
+
+    history = conversations[session_id]
+
+    # history based on max recent messages
+    if max_messages:
+        history = history[-max_messages:]
+
+    return history
+
+
+def format_history_for_prompt(session_id: str, max_messages: int = 5):
+    history = get_conversation_history(session_id, max_messages)
+    formatted_history = ""
+
+    for msg in history:
+        role = "human" if msg["role"] == "user" else "assistant"
+        formatted_history += f"{role}: {msg['content']}\n\n"
+
+    return formatted_history
+
+
+# follow up questions (contextualize questions)
+def contextualize_query(query: str, conversation_history, ai_client):
+    # system prompt for context-aware reformulation
+    contextualize_system_prompt = (
+        "Given a chat history and the latest user question "
+        "which might reference context in the chat history, "
+        "formulate a standalone question which can be understood "
+        "without the chat history. Do NOT answer the question, "
+        "just reformulate it if needed, otherwise return it as is."
+    )
+
+    # API call
+    completion = ai_client.chat.completions.create(
+        model="deepseek/deepseek-r1:free",
+        messages=[{
+            "role": "system", "content": contextualize_system_prompt
+        },
+            {
+            "role": "user", "content": f"Chat history:\n{conversation_history}\n\nQuestion:\n{query}"
+        }
+        ],
+    )
+    return completion.choices[0].message.content
+
+
+def conversational_rag_query(collection, query: str, session_id: str, n_chunks: int = 3):
+    # get conversation history
+    conversation_history = format_history_for_prompt(session_id)
+
+    # handle follow-up questions
+    query = contextualize_query(query, conversation_history, ai_client)
+    print("Contextualized query: ", query)
+
+    # get chunks
+    context, sources = get_context_with_sources(
+        semantic_search(collection, query, n_chunks))
+    # print("Context: ", context)
+    # print("Sources: ", sources)
+
+    response = generate_response(query, context, conversation_history)
+
+    # append conversation history
+    add_message(session_id, "user", query)
+    add_message(session_id, "assistant", response)
+
+    return response, sources
+
+
+# Test the RAG model
+session_id = create_session()
+print(session_id)
+
+q1 = "When was GreenGrow Innovations founded?"
+res1, sour1 = conversational_rag_query(collection, q1, session_id)
+print("response 1: ", res1)
+
+q2 = "Where is it located"
+res2, sour2 = conversational_rag_query(collection, q2, session_id)
+print("response 2:", res2)
+
+# print(f"\n\nConversations:\n {conversations}")
